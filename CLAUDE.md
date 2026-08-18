@@ -1,4 +1,23 @@
 <!-- code-review-graph MCP tools -->
+
+## Where this setup came from
+
+The AI ecosystem around this repo — the review gateway, the guard hooks, the
+graph and the vault — is built and documented in
+`~/Code/LAYOVR_AI_ECOSYSTEM_SETUP.md`. Read the phase you are touching before
+changing anything it configured; several of its own snippets are hard-coded to
+tripmesh paths and must be substituted per repo.
+
+**First thing in a fresh session, run:**
+
+```bash
+node ~/Code/layovr-status.mjs
+```
+
+It derives progress from disk by re-running each phase gate, so it is correct
+even when nobody remembers anything — no conversation, no task list, no
+hand-maintained checklist that quietly went stale. It is read-only.
+
 ## MCP Tools: code-review-graph
 
 **IMPORTANT: This project has a knowledge graph. ALWAYS use the
