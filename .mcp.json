@@ -32,6 +32,13 @@
         "--headless"
       ],
       "type": "stdio"
+    },
+    "graphify": {
+      "type": "stdio",
+      "command": "graphify-mcp",
+      "args": [
+        "/Users/abatouyabdel/Code/layovr-landing/graphify-out/graph.json"
+      ]
     }
   }
 }
