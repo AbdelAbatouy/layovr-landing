@@ -1,10 +1,38 @@
 #!/usr/bin/env node
 /** Table-driven test for guard.mjs. Run: node .claude/hooks/guard.test.mjs */
 import { execFileSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import * as path from "node:path";
 
-const guard = path.join(path.dirname(fileURLToPath(import.meta.url)), "guard.mjs");
+const here = path.dirname(fileURLToPath(import.meta.url));
+const guard = path.join(here, "guard.mjs");
+
+/**
+ * This suite is copied verbatim into every repo, but guard.config.json is
+ * per-repo — so branch-protection expectations must be DERIVED, not hard-coded.
+ * A repo that legitimately allows pushing to its default branch would otherwise
+ * fail these cases forever, and the obvious "fix" is deleting the config, which
+ * silently removes an exemption someone chose deliberately.
+ *
+ * Everything that is NOT branch protection stays hard-coded. Relaxing branches
+ * must never relax anything else, and that is the property worth pinning.
+ */
+const PROTECTED = (() => {
+  try {
+    const cfg = JSON.parse(readFileSync(path.join(here, "guard.config.json"), "utf8"));
+    if (Array.isArray(cfg.protectedBranches)) return cfg.protectedBranches.filter((b) => typeof b === "string");
+  } catch { /* absent or malformed -> strict default, same as the guard */ }
+  return ["main", "master", "production", "release"];
+})();
+
+/** Expected decision for any push whose refspec targets `branch`. */
+const branchPush = (branch) => (PROTECTED.includes(branch) ? "deny" : "allow");
+
+// Assembled at runtime so this file contains no literal secret-shaped string.
+// A hard-coded one is indistinguishable from a real leak to any scanner, and a
+// credential check that cries wolf is one people learn to ignore.
+const SB_SECRET = "sb_" + "secret_" + "AbCdEfGhIjKlMnOpQrSt";
 
 const serviceJwt =
   "eyJhbGciOiJIUzI1NiJ9." +
@@ -17,13 +45,22 @@ const CASES = [
   ["truncate",             { tool_name: "Bash", tool_input: { command: "psql -c 'TRUNCATE TABLE users'" } }, "deny"],
   ["delete without where", { tool_name: "Bash", tool_input: { command: "psql -c 'DELETE FROM bookings;'" } }, "deny"],
   ["update without where", { tool_name: "Bash", tool_input: { command: "psql -c \"UPDATE users SET role='admin'\"" } }, "deny"],
-  ["push to main",         { tool_name: "Bash", tool_input: { command: "git push origin main" } }, "deny"],
+  ["push to main",         { tool_name: "Bash", tool_input: { command: "git push origin main" } }, branchPush("main")],
   ["force push",           { tool_name: "Bash", tool_input: { command: "git push --force origin feat/x" } }, "deny"],
   ["force-with-lease ok",  { tool_name: "Bash", tool_input: { command: "git push --force-with-lease origin feat/x" } }, "allow"],
   ["push to feature ok",   { tool_name: "Bash", tool_input: { command: "git push origin feat/ask-layovr-redesign" } }, "allow"],
   ["branch named main-*",  { tool_name: "Bash", tool_input: { command: "git push origin feat/main-nav" } }, "allow"],
   ["branch named *master", { tool_name: "Bash", tool_input: { command: "git push origin fix/master-detail" } }, "allow"],
-  ["push HEAD:main",       { tool_name: "Bash", tool_input: { command: "git push origin HEAD:main" } }, "deny"],
+  ["push HEAD:main",       { tool_name: "Bash", tool_input: { command: "git push origin HEAD:main" } }, branchPush("main")],
+  // git's global options sit between `git` and the subcommand. Before these
+  // existed, `git -C <path> push origin main` was silently ALLOWED.
+  ["git -C push to main",  { tool_name: "Bash", tool_input: { command: "git -C /r push origin main" } }, branchPush("main")],
+  ["git -c push to main",  { tool_name: "Bash", tool_input: { command: "git -c core.pager=cat push origin main" } }, branchPush("main")],
+  ["--git-dir push",       { tool_name: "Bash", tool_input: { command: "git --git-dir=/x/.git --work-tree=/x push origin master" } }, branchPush("master")],
+  ["git -C force push",    { tool_name: "Bash", tool_input: { command: "git -C /r push --force origin feat" } }, "deny"],
+  ["git -C reset --hard",  { tool_name: "Bash", tool_input: { command: "git -C /r reset --hard origin/main" } }, "deny"],
+  ["git -C feature ok",    { tool_name: "Bash", tool_input: { command: "git -C /r push origin feat/main-nav" } }, "allow"],
+  ["git -C status ok",     { tool_name: "Bash", tool_input: { command: "git -C /r status --porcelain" } }, "allow"],
   ["reset --hard origin",  { tool_name: "Bash", tool_input: { command: "git reset --hard origin/main" } }, "deny"],
   ["rm -rf home",          { tool_name: "Bash", tool_input: { command: "rm -rf ~" } }, "deny"],
   ["cat .env",             { tool_name: "Bash", tool_input: { command: "cat .env.local" } }, "deny"],
@@ -55,24 +92,16 @@ const CASES = [
   ["unknown tool ok",      { tool_name: "Read", tool_input: { file_path: ".env" } }, "allow"],
   ["empty payload ok",     {}, "allow"],
 
-  // ---- added 2026-08-16, from failures this project actually hit ----------
-
-  // `supabase projects api-keys` printed the legacy service_role JWT in full
-  // into a transcript on 2026-08-03. It redacts sb_secret_ but not the legacy
-  // pair. Denied unless piped through a filter.
+  // ---- restored 2026-08-18: rules from incidents this project actually had ----
+  // These were dropped by an upstream guard.mjs update. Re-added because each
+  // one exists for something that already happened here.
   ["api-keys unpiped",     { tool_name: "Bash", tool_input: { command: "supabase projects api-keys --project-ref abc" } }, "deny"],
   ["api-keys piped ok",    { tool_name: "Bash", tool_input: { command: "supabase projects api-keys --project-ref abc | node -e 'x'" } }, "allow"],
-
-  // Deleting a Supabase key is irreversible — the value can never be reissued.
   ["api-key delete",       { tool_name: "Bash", tool_input: { command: "supabase projects api-keys delete --name default" } }, "ask"],
-
-  // sb_secret_ has no decodable role claim, so shape alone must be the signal.
-  // This is the live production service credential as of 2026-08-05.
-  ["write sb_secret_",     { tool_name: "Write", tool_input: { file_path: "lib/db.ts", content: "const k='sb_secret_AbCdEfGhIjKlMnOpQrSt'" } }, "deny"],
-  ["redirect sb_secret_",  { tool_name: "Bash", tool_input: { command: "echo 'sb_secret_AbCdEfGhIjKlMnOpQrSt' > src/k.ts" } }, "deny"],
-
-  // The publishable half is public by design and must NOT be blocked —
-  // it lives in eas.json, committed, on purpose.
+  ["write sb_secret_",     { tool_name: "Write", tool_input: { file_path: "lib/db.ts", content: `const k='${SB_SECRET}'` } }, "deny"],
+  ["redirect sb_secret_",  { tool_name: "Bash", tool_input: { command: `echo '${SB_SECRET}' > src/k.ts` } }, "deny"],
+  // The publishable half is public by design and committed in eas.json — a
+  // guard that blocks legitimate work gets itself disabled.
   ["write publishable ok", { tool_name: "Write", tool_input: { file_path: "eas.json", content: '"EXPO_PUBLIC_SUPABASE_ANON_KEY": "sb_publishable_AbCdEfGhIjKlMnOpQrSt"' } }, "allow"],
 ];
 

@@ -12,10 +12,57 @@
  * brick the session. It fails CLOSED on the rules it actually understands.
  */
 import { readFileSync } from "node:fs";
+import * as path from "node:path";
+import { fileURLToPath } from "node:url";
 
 /** @typedef {{decision:"deny"|"ask", reason:string}} Rule */
 
-const PROTECTED_BRANCHES = ["main", "master", "production", "release"];
+/**
+ * Per-repo overrides, from `.claude/hooks/guard.config.json` next to this file.
+ *
+ * Exists for one real case: a repo with no pull-request workflow, where pushing
+ * to its own default branch is the normal and correct thing to do. Blocking it
+ * there buys nothing and teaches people to route around the guard, which is how
+ * guards die. The override is a committed file rather than an env var so the
+ * exemption is visible in review.
+ *
+ *   { "protectedBranches": [] }        // no branch protection in this repo
+ *   { "protectedBranches": ["main"] }  // narrow it
+ *
+ * Absent or malformed config falls back to the strict default.
+ */
+function loadConfig() {
+  const fallback = { protectedBranches: ["main", "master", "production", "release"] };
+  try {
+    const here = path.dirname(fileURLToPath(import.meta.url));
+    const cfg = JSON.parse(readFileSync(path.join(here, "guard.config.json"), "utf8"));
+    return {
+      protectedBranches: Array.isArray(cfg.protectedBranches)
+        ? cfg.protectedBranches.filter((b) => typeof b === "string")
+        : fallback.protectedBranches,
+    };
+  } catch {
+    return fallback;
+  }
+}
+
+const PROTECTED_BRANCHES = loadConfig().protectedBranches;
+
+/**
+ * `git` plus any of its GLOBAL options, up to the subcommand.
+ *
+ * Without this, `\bgit\s+push\b` misses `git -C /path push origin main` and
+ * `git -c core.pager=cat push origin main` — the subcommand isn't adjacent to
+ * `git`, so every push rule silently does nothing. Options that take a separate
+ * value have to be spelled out, otherwise `-C` swallows the path and the match
+ * still fails.
+ *
+ * Verified gap, not hypothetical: `git -C ~/repo push origin main` was ALLOWED
+ * by the previous pattern.
+ */
+const GIT = String.raw`\bgit(?:\s+(?:-C\s+\S+|-c\s+\S+|--git-dir(?:=|\s+)\S+|--work-tree(?:=|\s+)\S+` +
+  String.raw`|--namespace(?:=|\s+)\S+|--exec-path(?:=\S+)?|--no-pager|--paginate|--no-replace-objects` +
+  String.raw`|--bare|--literal-pathspecs|--no-optional-locks))*\s+`;
 
 /** Commands that are never acceptable from an agent session. */
 const BASH_DENY = [
@@ -36,20 +83,22 @@ const BASH_DENY = [
     reason: "UPDATE without a WHERE clause is blocked.",
   },
   {
-    re: /\bgit\s+push\b[^\n]*--force(?!-with-lease)/,
+    re: new RegExp(`${GIT}push\\b[^\\n]*--force(?!-with-lease)`),
     reason: "git push --force is blocked. Use --force-with-lease, and never on a protected branch.",
   },
-  {
+  // An empty protectedBranches list must disable this rule, not compile
+  // `(?:)` — which matches the empty string and would deny every git push.
+  ...(PROTECTED_BRANCHES.length === 0 ? [] : [{
     // Anchored to a refspec position so `git push origin feat/main-nav` is not
     // caught by the substring "main". Bare `git push` while standing on a
     // protected branch is covered by the permissions.ask rule, not here.
     re: new RegExp(
-      `\\bgit\\s+push\\b[^\\n]*\\s(?:HEAD:)?(?:refs/heads/)?(?:${PROTECTED_BRANCHES.join("|")})(?::|\\s|$)`,
+      `${GIT}push\\b[^\\n]*\\s(?:HEAD:)?(?:refs/heads/)?(?:${PROTECTED_BRANCHES.join("|")})(?::|\\s|$)`,
     ),
     reason: `Direct push to a protected branch (${PROTECTED_BRANCHES.join(", ")}) is blocked. Open a pull request.`,
-  },
+  }]),
   {
-    re: /\bgit\s+(reset\s+--hard\s+origin|clean\s+-[a-z]*f[a-z]*d|checkout\s+--\s+\.)/,
+    re: new RegExp(`${GIT}(?:reset\\s+--hard\\s+origin|clean\\s+-[a-z]*f[a-z]*d|checkout\\s+--\\s+\\.)`),
     reason: "This command discards uncommitted work irreversibly. Commit or stash first, then re-run it yourself.",
   },
   {
@@ -70,21 +119,18 @@ const BASH_DENY = [
     reason: "Dumping the environment is blocked; it exposes every secret in the shell to model context.",
   },
   {
-    re: /\bsupabase\s+db\s+reset\b(?![\s\S]*--local)/,
-    reason: "`supabase db reset` without --local can destroy a linked remote database.",
-  },
-  {
-    // Added 2026-08-16. `supabase projects api-keys` prints legacy anon and
-    // service_role JWTs in full — it redacts sb_secret_ values but NOT the
-    // legacy pair. That is exactly how a leaked service-role key ended up in
-    // a transcript on 2026-08-03. Pipe it through a filter instead.
-    // Scoped to the LISTING form. A subcommand (delete/create/update) prints no
-    // key material, and `delete` has its own ask rule below — without this
-    // exclusion the deny fires first and the ask is unreachable.
+    // `supabase projects api-keys` prints legacy anon and service_role JWTs in
+    // full — it redacts sb_secret_ but NOT the legacy pair. That is exactly how
+    // a leaked service-role key reached a transcript on 2026-08-03. Scoped to
+    // the listing form so the delete subcommand reaches its own ask rule below.
     re: /\bsupabase\s+projects\s+api-keys\b(?![\s\S]*\|)(?![\s\S]*\b(?:delete|rm|revoke|create|update)\b)/,
     reason:
       "`supabase projects api-keys` prints legacy anon and service_role JWTs in full. " +
-      "Pipe it through a filter that prints only the fields you need, e.g. `| node -e '…'`.",
+      "Pipe it through a filter that prints only the fields you need.",
+  },
+  {
+    re: /\bsupabase\s+db\s+reset\b(?![\s\S]*--local)/,
+    reason: "`supabase db reset` without --local can destroy a linked remote database.",
   },
 ];
 
@@ -111,9 +157,9 @@ const BASH_ASK = [
     reason: "This publishes a package to the registry.",
   },
   {
-    // Added 2026-08-16. Deleting a Supabase API key is irreversible — the value
-    // cannot be recreated, so a wrong deletion means issuing a new key and
-    // redeploying every consumer.
+    // Deleting a Supabase API key is irreversible: the same value can never be
+    // reissued, so a wrong deletion means a new key and redeploying every
+    // consumer.
     re: /\bsupabase\s+[^\n]*\bapi-keys\b[^\n]*\b(delete|rm|revoke)\b/,
     reason: "Deleting a Supabase API key is irreversible; the same value can never be reissued. Confirm the key name.",
   },
@@ -128,9 +174,9 @@ const CONTENT_DENY = [
   { re: /\bpplx-[A-Za-z0-9]{32,}/, label: "a Perplexity API key" },
   { re: /\b(?:AKIA|ASIA)[0-9A-Z]{16}\b/, label: "an AWS access key ID" },
   { re: /\bph[xsar]_[A-Za-z0-9]{32,}/, label: "a PostHog personal API key" },
-  // Added 2026-08-16: Supabase's post-JWT secret key. It carries no decodable
-  // role claim, so shape alone is the signal — and it is now the live
-  // production service credential.
+  // Supabase's post-JWT service credential. Unlike a JWT it carries no decodable
+  // role claim, so shape alone is the signal. The publishable half is public by
+  // design and is deliberately NOT listed — it is committed in eas.json.
   { re: /\bsb_secret_[A-Za-z0-9_-]{10,}/, label: "a Supabase secret key (sb_secret_…)" },
   { re: /-----BEGIN (?:RSA |EC |DSA |OPENSSH |PGP )?PRIVATE KEY-----/, label: "a private key block" },
   { re: /\b(?:postgres|postgresql|mysql|mongodb(?:\+srv)?):\/\/[^\s:@/]+:[^\s@]+@/, label: "a database URL with an inline password" },
