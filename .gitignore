@@ -1,2 +1,24 @@
 .git/
 .wrangler/
+# Added by code-review-graph
+.code-review-graph/
+
+# Claude Code — share the config, never the machine-local overrides
+.claude/settings.local.json
+.claude/worktrees/
+.claude/*.bak
+!.claude/settings.json
+!.claude/agents/
+!.claude/skills/
+!.claude/hooks/
+
+# macOS finder metadata — never useful in a repo
+.DS_Store
+
+# A lockfile with no package.json is a stray from running npm in this
+# directory; this is a static site with no JS dependency tree. Ignored rather
+# than committed so it stops showing up as untracked noise.
+package-lock.json
+
+# code-graph tooling output
+graphify-out/
