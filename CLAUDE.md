@@ -8,6 +8,14 @@ graph and the vault — is built and documented in
 changing anything it configured; several of its own snippets are hard-coded to
 tripmesh paths and must be substituted per repo.
 
+**Resuming after a break? Read the handoff first:**
+`~/Code/AI_ECOSYSTEM_HANDOFF.md` (versioned at
+`~/Code/layovr-ai-gateway/docs/AI_ECOSYSTEM_HANDOFF.md`). It states what is
+deployed, what is verified by measurement versus assumed, and what is open and
+blocking — including two HIGH security findings that block further work on the
+tripmesh rate limiter. The runbook says how the system was built; the handoff
+says what state it is actually in.
+
 **First thing in a fresh session, run:**
 
 ```bash
