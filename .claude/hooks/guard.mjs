@@ -163,6 +163,26 @@ const BASH_ASK = [
     re: /\bsupabase\s+[^\n]*\bapi-keys\b[^\n]*\b(delete|rm|revoke)\b/,
     reason: "Deleting a Supabase API key is irreversible; the same value can never be reissued. Confirm the key name.",
   },
+  {
+    // `functions deploy` ships code to the live project; `secrets set` writes a
+    // production credential. Both were ungated until 2026-08-20 — verified by
+    // running the hook, which returned allow for each while db push, wrangler
+    // deploy and eas build --profile production all returned ask. An omission,
+    // not a design choice.
+    //
+    // The optional flag group is deliberate. A bare
+    // /\bsupabase\s+(?:functions\s+deploy|secrets\s+set)\b/ requires the
+    // subcommand to sit immediately after `supabase`, so
+    // `supabase --experimental functions deploy` walks straight past it — the
+    // same shape as the `git -C` bypass found on 2026-08-18. Global flags are
+    // matched explicitly rather than assumed absent.
+    //
+    // Scoped to the two mutating forms only: `functions serve`, `functions list`
+    // and `secrets list` are read-only or local and must stay allow, or the gate
+    // becomes noise people click through.
+    re: /\bsupabase\s+(?:-{1,2}[\w-]+(?:[= ]\S+)?\s+)*(?:functions\s+deploy|secrets\s+set)\b/,
+    reason: "This deploys code or writes a secret to the live Supabase project. Confirm the target before it ships.",
+  },
 ];
 
 /** Secret shapes that must never be written into a file by the agent. */

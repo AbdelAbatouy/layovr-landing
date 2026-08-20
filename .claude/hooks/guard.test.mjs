@@ -98,6 +98,21 @@ const CASES = [
   ["api-keys unpiped",     { tool_name: "Bash", tool_input: { command: "supabase projects api-keys --project-ref abc" } }, "deny"],
   ["api-keys piped ok",    { tool_name: "Bash", tool_input: { command: "supabase projects api-keys --project-ref abc | node -e 'x'" } }, "allow"],
   ["api-key delete",       { tool_name: "Bash", tool_input: { command: "supabase projects api-keys delete --name default" } }, "ask"],
+  // Both of these returned allow until 2026-08-20, while db push and wrangler
+  // deploy returned ask — an omission. functions deploy ships code to the live
+  // project; secrets set writes a production credential.
+  ["functions deploy",     { tool_name: "Bash", tool_input: { command: "supabase functions deploy whats-on-events" } }, "ask"],
+  ["secrets set",          { tool_name: "Bash", tool_input: { command: "supabase secrets set PUBLIC_RATE_LIMIT_SALT=abc" } }, "ask"],
+  // Interposed global flags must not walk past the gate — the `git -C` bypass
+  // shape. A regex anchoring the subcommand directly after `supabase` fails these.
+  ["deploy behind a flag", { tool_name: "Bash", tool_input: { command: "supabase --experimental functions deploy whats-on-events" } }, "ask"],
+  ["secrets set w/ flag",  { tool_name: "Bash", tool_input: { command: "supabase --workdir /tmp/x secrets set FOO=bar" } }, "ask"],
+  // Negatives: read-only and local forms stay allow, or the gate becomes noise
+  // that people learn to click through.
+  ["functions serve ok",   { tool_name: "Bash", tool_input: { command: "supabase functions serve" } }, "allow"],
+  ["secrets list ok",      { tool_name: "Bash", tool_input: { command: "supabase secrets list" } }, "allow"],
+  ["functions list ok",    { tool_name: "Bash", tool_input: { command: "supabase functions list" } }, "allow"],
+  ["functions new ok",     { tool_name: "Bash", tool_input: { command: "supabase functions new my-fn" } }, "allow"],
   ["write sb_secret_",     { tool_name: "Write", tool_input: { file_path: "lib/db.ts", content: `const k='${SB_SECRET}'` } }, "deny"],
   ["redirect sb_secret_",  { tool_name: "Bash", tool_input: { command: `echo '${SB_SECRET}' > src/k.ts` } }, "deny"],
   // The publishable half is public by design and committed in eas.json — a
