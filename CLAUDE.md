@@ -72,6 +72,32 @@ tools before Grep/Glob/Read. Start with get_minimal_context_tool, then
 query_graph_tool with a specific target. Use get_impact_radius_tool before
 changing shared code.
  
+
+### Code graphs — use them before Grep
+
+Two graphs are wired, for different jobs. Both are cheaper and more exact than
+scanning files. Reach for Grep/Glob/Read only when neither covers the question.
+
+**code-review-graph** — anything relative to a diff:
+- `get_minimal_context_tool` first, always. ~100 tokens, tells you where to look.
+- `detect_changes_tool` for a risk-scored view of what changed.
+- `get_impact_radius_tool` before touching shared code.
+- `get_affected_flows_tool` to see which execution paths a change disturbs.
+- `query_graph_tool` with pattern ∈ {callers_of, callees_of, imports_of,
+  importers_of, children_of, tests_for, inheritors_of, file_summary}.
+- `semantic_search_nodes_tool` to find a symbol by meaning rather than name.
+
+**graphify** — whole-corpus structure, including docs and specs:
+- `graph_stats` and `god_nodes` to orient in an unfamiliar area.
+- `get_community` to read a subsystem as a unit.
+- `shortest_path` to find how two things are connected at all.
+- `get_neighbors` for one node's immediate surroundings.
+- The `graphify://surprises` resource when a change feels riskier than it looks.
+
+Staleness matters for both. Every graph carries the commit it was built from.
+If `git rev-parse HEAD` disagrees with it, say so before trusting a structural
+answer, and run `graphify update .` (free) or `code-review-graph update` first.
+
 ## Security guardrails
 - NEVER print, log, or commit secrets, API keys, or .env contents.
 - NEVER place the Supabase service role key in client code or any
@@ -142,13 +168,3 @@ Apply in strict order. Higher levels override lower ones without debate.
   update this list in the same change rather than leaving it stale.
 - No secret in any file. This is a static marketing site — it has no Supabase
   client and should not acquire one without a deliberate decision.
-
-## graphify
-
-This project has a knowledge graph at graphify-out/ with god nodes, community structure, and cross-file relationships.
-
-Rules:
-- For codebase questions, first run `graphify query "<question>"` when graphify-out/graph.json exists. Use `graphify path "<A>" "<B>"` for relationships and `graphify explain "<concept>"` for focused concepts. These return a scoped subgraph, usually much smaller than GRAPH_REPORT.md or raw grep output.
-- If graphify-out/wiki/index.md exists, use it for broad navigation instead of raw source browsing.
-- Read graphify-out/GRAPH_REPORT.md only for broad architecture review or when query/path/explain do not surface enough context.
-- After modifying code, run `graphify update .` to keep the graph current (AST-only, no API cost).
